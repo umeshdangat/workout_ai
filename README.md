@@ -47,4 +47,3 @@ WorkoutAI is an **open-source adaptive strength and conditioning platform** that
 
 ---
 
-

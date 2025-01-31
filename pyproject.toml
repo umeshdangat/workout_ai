@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "workout-ai"
+version = "0.1.0"
+description = "AI-powered adaptive strength & HIIT training"
+authors = ["Umesh Dangat <udangat@udangat.name>"]
+license = "Apache 2.0"
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.10"  # or whichever version you choose
+fastapi = "^0.95.0"
+openai = "^1.0.0"
+psycopg = "^3.1.8"  # or the current version of psycopg 3
+pydantic = "^1.10.0"
+alembic = "^1.8.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

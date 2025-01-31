@@ -47,4 +47,4 @@ WorkoutAI is an **open-source adaptive strength and conditioning platform** that
 
 ---
 
-Would you like to **add user authentication (OAuth2/JWT) next** or focus on **a chatbot interface**? 🚀
+

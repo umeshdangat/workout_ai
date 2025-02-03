@@ -15,6 +15,7 @@ psycopg = "^3.1.8"  # or the current version of psycopg 3
 pydantic = "^1.10.0"
 alembic = "^1.8.0"
 uvicorn = "^0.34.0"
+python-dotenv = "^1.0.1"
 
 [build-system]
 requires = ["poetry-core"]

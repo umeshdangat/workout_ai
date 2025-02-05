@@ -5,8 +5,20 @@ from typing import Optional
 
 import openai
 from dotenv import load_dotenv
-from fastapi import APIRouter, HTTPException, Query
-from backend.models.workouts import WorkoutPlan, WorkoutRequest, Exercise
+from fastapi import APIRouter, HTTPException
+
+from backend.models.workouts import (
+    WorkoutPlan,
+    Week,
+    Day,
+    Session,
+    WOD,
+    Strength,
+    RestDay,
+    ActiveRecoveryDay,
+    Movement,
+    WorkoutRequest,
+)
 
 # Initialize the router
 router = APIRouter()
@@ -23,130 +35,222 @@ if not OPENAI_API_KEY:
 client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
 # Constants for caching and rate limiting
-CACHE_FILE = "openai_workout_cache.json"
+CACHE_DIR = "workout_cache"  # Directory to store weekly cache files
 MIN_TIME_BETWEEN_REQUESTS = 20  # in seconds
 _last_request_time = 0  # Global variable to track the last request time
+
+# Ensure cache directory exists
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 
 # ---------------------------------------------
 # Utility Functions
 # ---------------------------------------------
 
-def save_to_cache(data: str, filename: str = CACHE_FILE) -> None:
+def save_to_cache(data: str, filename: str) -> None:
     """Save raw OpenAI response to a cache file."""
     with open(filename, "w") as file:
         json.dump({"openai_response": data}, file, indent=4)
 
 
-def load_from_cache(filename: str = CACHE_FILE) -> Optional[str]:
-    """Load cached response from the cache file, if available."""
+def load_from_cache(filename: str) -> Optional[str]:
+    """Load cached response from a cache file, if available."""
     if os.path.exists(filename):
         with open(filename, "r") as file:
             return json.load(file).get("openai_response")
     return None
 
 
-def clean_openai_response(raw_response: str) -> str:
-    """Clean and sanitize the raw response from OpenAI."""
-    # Remove Markdown formatting (if present)
-    if raw_response.startswith("```json"):
-        raw_response = raw_response.strip("```json").strip("```").strip()
-
-    # Validate JSON
+def parse_openai_response(raw_json: str) -> WorkoutPlan:
+    """
+    Parse the raw JSON response from OpenAI into a structured WorkoutPlan.
+    """
     try:
-        json.loads(raw_response)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON format in OpenAI response: {raw_response}") from e
+        # Parse JSON string into Python dictionary
+        response_data = json.loads(raw_json)
 
-    return raw_response
+        # Parse weeks
+        weeks = []
+        for week_data in response_data.get("weeks", []):
+            days = []
+            for day_data in week_data.get("days", []):
+                sessions = []
+                for session_data in day_data.get("sessions", []):
+                    session_type = session_data.get("type")
+                    details = session_data.get("details")
 
+                    if session_type == "WOD":
+                        sessions.append(
+                            Session(
+                                type="WOD",
+                                details=WOD(
+                                    description=details.get("description"),
+                                    intended_stimulus=details.get("intended_stimulus"),
+                                    scaling_options=details.get("scaling_options"),
+                                    movements=[
+                                        Movement(
+                                            description=movement.get("description"),
+                                            resources=movement.get("resources"),
+                                        )
+                                        for movement in details.get("movements", [])
+                                    ],
+                                ),
+                            )
+                        )
+                    elif session_type == "Strength":
+                        sessions.append(
+                            Session(
+                                type="Strength",
+                                details=Strength(
+                                    description=details.get("description"),
+                                    sets=details.get("sets"),
+                                    reps=details.get("reps"),
+                                    intensity=details.get("intensity"),
+                                    rest=details.get("rest"),
+                                    notes=details.get("notes"),
+                                ),
+                            )
+                        )
+                    elif session_type == "RestDay":
+                        sessions.append(Session(type="Rest Day", details=RestDay(
+                            notes=session_data["details"].get("notes", "Take the day off to recover.")
+                        )))
+                    elif session_type == "Active Recovery":
+                        sessions.append(Session(type="Active Recovery", details=ActiveRecoveryDay(
+                            activities=details.get("activities", []),
+                            duration=details.get("duration", "30-60 minutes"),
+                            intensity=details.get("intensity", "Low"),
+                        )))
 
-def flatten_workout_data(raw_data: dict) -> list[Exercise]:
-    """Flatten nested workout data into a list of Exercise objects."""
-    exercises = []
-    for week_index, week_data in enumerate(raw_data["exercises"], start=1):
-        week_key = f"week {week_index}"
-        if week_key in week_data:
-            for exercise in week_data[week_key]:
-                exercises.append(Exercise(
-                    week=week_index,
-                    name=exercise["exercise"],
-                    sets=exercise["sets"],
-                    reps=exercise["reps"],
-                    intensity=exercise["intensity"]
-                ))
-    return exercises
+                days.append(Day(sessions=sessions))
+            weeks.append(Week(days=days))
+
+        return WorkoutPlan(name=response_data["name"], weeks=weeks)
+
+    except (json.JSONDecodeError, KeyError, ValueError) as e:
+        raise ValueError(f"Failed to parse OpenAI response: {str(e)}")
 
 
 # ---------------------------------------------
 # Core Logic
 # ---------------------------------------------
 
-def parse_openai_response(raw_json: str) -> WorkoutPlan:
-    """Parse OpenAI response into a WorkoutPlan."""
-    # Clean the response
-    raw_json = clean_openai_response(raw_json)
+def build_prompt(user_input: WorkoutRequest, week: int) -> str:
+    """Builds the prompt for the OpenAI API call."""
+    return f"""
+    You are a coach generating structured workout programs. Your task is to create a structured JSON workout plan for {user_input.name}, a {user_input.age}-year-old {user_input.experience} athlete.
 
-    # Convert JSON string to dictionary
-    try:
-        data = json.loads(raw_json)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"❌ Invalid JSON format: {raw_json}") from e
+    Details:
+    - Goals: {', '.join(user_input.goals)}.
+    - Avoid repeating benchmark CrossFit WODs. Create new, custom workouts. Mention the workout details in the description field.
+    - Available equipment: {', '.join(user_input.equipment)}.
+    - Injuries: {', '.join(user_input.injuries) if user_input.injuries else 'None'}.
+    - Avoid exercises: {', '.join(user_input.avoid_exercises) if user_input.avoid_exercises else 'None'}.
+    - Sessions per week: {user_input.sessions_per_week}.
+    - Session duration: {user_input.constraints or '75-90 minutes'}.
 
-    # Flatten workout data
-    exercises = []
-    for exercise in data.get("exercises", []):
-        exercises.append(Exercise(
-            week=exercise["week"],
-            name=exercise["name"],
-            sets=exercise["sets"],
-            reps=exercise["reps"],
-            intensity=exercise["intensity"]
-        ))
+    Output Requirements:
+    - Strictly adhere to the following JSON schema.
+    - Do not wrap the response in Markdown or as a string.
+    - Return a valid JSON object.
 
-    # Return the parsed workout plan
-    return WorkoutPlan(name=data["name"], weeks=data["weeks"], exercises=exercises)
+    Schema:
+    {{
+        "name": "Program Name",
+        "weeks": [
+            {{
+                "days": [
+                    {{
+                        "sessions": [
+                            {{
+                                "type": "WOD",
+                                "details": {{
+                                    "description": "Fran: 21-15-9 reps of thrusters(95#/65#) and pull-ups",
+                                    "intended_stimulus": "Quick and intense",
+                                    "scaling_options": "Reduce weight if needed, aim for unbroken sets",
+                                    "movements": [
+                                        {{
+                                            "description": "Thrusters (95/65 lbs)",
+                                            "resources": "https://link.to/movement"
+                                        }},
+                                        {{
+                                            "description": "Pull-ups",
+                                            "resources": "https://link.to/movement"
+                                        }}
+                                    ]
+                                }}
+                            }},
+                            {{
+                                "type": "Strength",
+                                "details": {{
+                                    "description": "Push Press escalating load from 70% to 85% of 1RM",
+                                    "sets": 5,
+                                    "reps": 3,
+                                    "intensity": "85% of 1RM",
+                                    "rest": "2 minutes between sets",
+                                    "notes": "Focus on technique and speed"
+                                }}
+                            }},
+                            {{
+                                "type": "Rest Day",
+                                "details": {{
+                                    "notes": "Take the day off to recover.",
+                                    "description": "An apple a day keeps the doctor away! Eat well"
+                                }}
+                            }},
+                            {{
+                                "type": "Active Recovery",
+                                "details": {{
+                                    "activities": ["Mobility work", "Foam rolling"],
+                                    "duration": "30-60 minutes",
+                                    "intensity": "Low",
+                                    "description": "Take a stroll in the park"
+                                }}
+                            }}
+                        ]
+                    }}
+                ]
+            }}
+        ]
+    }}
+
+    Generate a workout plan for week {week}. Ensure the output is valid JSON, adheres to the schema, and is not wrapped in Markdown or as a string.
+    """
 
 
-def generate_workout_with_ai(user_input: WorkoutRequest, force_generate: bool) -> WorkoutPlan:
-    """Generate a workout plan using OpenAI GPT with caching and rate limiting."""
+def generate_weekly_workout(user_input: WorkoutRequest, week: int) -> Week:
+    """
+    Generate workout sessions for a specific week.
+    """
     global _last_request_time
 
-    # Check cache
-    if not force_generate:
-        cached_response = load_from_cache()
-        if cached_response:
-            try:
-                return parse_openai_response(cached_response)
-            except ValueError:
-                print("⚠ Cached response is invalid. Regenerating a new plan...")
+    # Cache file for the specific week
+    cache_file = os.path.join(CACHE_DIR, f"week_{week}.json")
+
+    # Load from cache if available
+    cached_response = load_from_cache(cache_file)
+    if cached_response:
+        print(f"Cached raw response for week: {week} present, Reloading from cache...")
+        try:
+            print(f"parsing raw response for week {week}...")
+            return parse_openai_response(cached_response).weeks[0]
+        except ValueError:
+            print(f"⚠ Cached response for week {week} is invalid. Regenerating...")
 
     # Enforce rate limiting
     time_since_last_request = time.time() - _last_request_time
     if time_since_last_request < MIN_TIME_BETWEEN_REQUESTS:
+        print(
+            f"time_since_last_request less than {time_since_last_request}. "
+            f"Enforcing rate limiting by throttling for {MIN_TIME_BETWEEN_REQUESTS - time_since_last_request} seconds...")
         time.sleep(MIN_TIME_BETWEEN_REQUESTS - time_since_last_request)
 
-    # Build the OpenAI prompt safely
-    prompt = (
-        f"Create a structured {user_input.weeks}-week workout plan for {user_input.name}, "
-        f"a {user_input.age}-year-old {user_input.experience} lifter.\n"
-        f"Goals: {', '.join(user_input.goals)}.\n"
-        f"Available equipment: {', '.join(user_input.equipment)}.\n"
-        f"Injuries: {', '.join(user_input.injuries) if user_input.injuries else 'None'}.\n"
-        f"Avoid these exercises: {', '.join(user_input.avoid_exercises) if user_input.avoid_exercises else 'None'}.\n"
-        "\nFormat the response as valid JSON with:\n"
-        "- 'name': name of the plan\n"
-        "- 'weeks': number of weeks\n"
-        "- 'exercises': a list of workouts, structured like:\n"
-        "  [\n"
-        "      {\"week\": 1, \"name\": \"Back Squat\", \"sets\": 4, \"reps\": 6, \"intensity\": \"70% of 1RM\"},\n"
-        "      {\"week\": 1, \"name\": \"Pull-Ups\", \"sets\": 3, \"reps\": 8, \"intensity\": \"Bodyweight\"}\n"
-        "  ]"
-    )
-
+    # Prompt to guide OpenAI API
+    prompt = build_prompt(user_input, week)
+    print(f"prompt: {prompt}")
     try:
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo-0125",
+            model="gpt-3.5-turbo",
             messages=[{"role": "system", "content": "You are a fitness coach generating structured training programs."},
                       {"role": "user", "content": prompt}],
             temperature=0.7,
@@ -154,15 +258,27 @@ def generate_workout_with_ai(user_input: WorkoutRequest, force_generate: bool) -
 
         _last_request_time = time.time()
 
-        # Parse and save the response
+        # Save and parse the response
         workout_text = response.choices[0].message.content.strip()
-        save_to_cache(workout_text)
-        return parse_openai_response(workout_text)
+        print(f"saving raw response for week {week}... to cache_file: {cache_file}")
+        save_to_cache(workout_text, cache_file)
+        try:
+            print(f"parsing raw response for week {week}...")
+            response = parse_openai_response(workout_text).weeks[0]
+        except Exception as e:
+            raise ValueError(f"Failed to parse OpenAI response: {str(e)}")
+        return response
 
-    except openai.RateLimitError as e:
-        raise HTTPException(status_code=429, detail=f"Rate limit exceeded: {str(e)}")
     except openai.OpenAIError as e:
         raise HTTPException(status_code=500, detail=f"OpenAI API error: {str(e)}")
+
+
+def generate_workout_with_ai(user_input: WorkoutRequest) -> WorkoutPlan:
+    """
+    Generate a full workout plan for the requested duration.
+    """
+    weeks = [generate_weekly_workout(user_input, week) for week in range(1, user_input.duration + 1)]
+    return WorkoutPlan(name=f"{user_input.name}'s Plan", weeks=weeks)
 
 
 # ---------------------------------------------
@@ -170,9 +286,8 @@ def generate_workout_with_ai(user_input: WorkoutRequest, force_generate: bool) -
 # ---------------------------------------------
 
 @router.post("/generate", response_model=WorkoutPlan)
-def generate_workout(request: WorkoutRequest, force_generate: bool = Query(False)):
+def generate_workout(request: WorkoutRequest):
     """
-    API endpoint to generate a personalized training program.
-    If `force_generate=True`, it makes a fresh API call; otherwise, it uses cached data.
+    API endpoint to generate a workout plan.
     """
-    return generate_workout_with_ai(request, force_generate)
+    return generate_workout_with_ai(request)

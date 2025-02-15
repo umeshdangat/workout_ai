@@ -1,16 +1,39 @@
 version: '3.8'
+
 services:
-  postgres:
-    image: postgres:15
-    container_name: workout_ai_db
-    restart: always
+  mysql:
+    image: mysql:8
+    container_name: mysql_dev
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: workout_ai
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: workout_ai
+      MYSQL_USER: devuser
+      MYSQL_PASSWORD: devpass
     ports:
-      - "5432:5432"
+      - "3306:3306"
     volumes:
-      - pg_data:/var/lib/postgresql/data
+      - mysql_data:/var/lib/mysql
+    networks:
+      - dev_network
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.6.2
+    container_name: elasticsearch_dev
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - dev_network
+
 volumes:
-  pg_data:
+  mysql_data:
+  elasticsearch_data:
+
+networks:
+  dev_network:
+    driver: bridge

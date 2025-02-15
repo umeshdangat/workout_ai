@@ -3,10 +3,12 @@ import os
 import time
 from typing import Optional
 
+import faiss
 import openai
 from dotenv import load_dotenv
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
+from backend.core.create_embeddings import model
 from backend.models.workouts import (
     WorkoutPlan,
     Week,
@@ -20,11 +22,29 @@ from backend.models.workouts import (
     WorkoutRequest,
 )
 
-# Initialize the router
-router = APIRouter()
-
-# Load environment variables
+# Load INDEX_DIR from .env
 load_dotenv()
+INDEX_DIR = os.getenv("FAISS_INDEX_DIR")
+
+# Paths for FAISS Index & Metadata
+FAISS_INDEX_PATH = f"{INDEX_DIR}/workout_embeddings.index"
+METADATA_PATH = f"{INDEX_DIR}/workout_metadata.json"
+
+# Load FAISS index
+try:
+    index = faiss.read_index(FAISS_INDEX_PATH)
+except Exception as e:
+    raise RuntimeError(f"Failed to load FAISS index: {str(e)}")
+
+# Load metadata
+try:
+    with open(METADATA_PATH, "r") as f:
+        workout_metadata = json.load(f)
+except Exception as e:
+    raise RuntimeError(f"Failed to load metadata JSON: {str(e)}")
+
+# FastAPI Router
+router = APIRouter()
 
 # Load OpenAI API key
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -135,24 +155,36 @@ def parse_openai_response(raw_json: str) -> WorkoutPlan:
 # Core Logic
 # ---------------------------------------------
 
-def build_prompt(user_input: WorkoutRequest, week: int) -> str:
-    """Builds the prompt for the OpenAI API call."""
+def build_prompt(user_input: WorkoutRequest, week: int, previous_weeks_summary: Optional[str] = "") -> str:
+    """Builds an improved prompt for the OpenAI API call."""
     return f"""
-    You are a coach generating structured workout programs. Your task is to create a structured JSON workout plan for {user_input.name}, a {user_input.age}-year-old {user_input.experience} athlete.
+    You are a highly experienced coach generating structured workout programs. Your task is to create a detailed workout plan in valid JSON format for {user_input.name}, a {user_input.age}-year-old {user_input.experience} athlete.
 
-    Details:
-    - Goals: {', '.join(user_input.goals)}.
-    - Avoid repeating benchmark CrossFit WODs. Create new, custom workouts. Mention the workout details in the description field.
-    - Available equipment: {', '.join(user_input.equipment)}.
-    - Injuries: {', '.join(user_input.injuries) if user_input.injuries else 'None'}.
-    - Avoid exercises: {', '.join(user_input.avoid_exercises) if user_input.avoid_exercises else 'None'}.
-    - Sessions per week: {user_input.sessions_per_week}.
-    - Session duration: {user_input.constraints or '75-90 minutes'}.
+    Athlete Goals:
+    - {', '.join(user_input.goals)}.
+
+    Training Guidelines:
+    - Avoid repeating benchmark CrossFit WODs like "Grace" or "Fran" multiple times in the program. Create new, custom workouts with unique names.
+    - Incorporate progressive overload for strength training and Olympic lifts (e.g., increasing weight, volume, or intensity weekly).
+    - Include CrossFit WODs with high-skill movements (e.g., handstand push-ups, double-unders, bar muscle-ups).
+    - Ensure a balance between WODs, strength sessions, and recovery days to avoid overtraining or burnout.
+    - Use the following athlete details to customize the plan:
+        - Available equipment: {', '.join(user_input.equipment)}.
+        - Injuries: {', '.join(user_input.injuries) if user_input.injuries else 'None'}.
+        - Avoid these exercises: {', '.join(user_input.avoid_exercises) if user_input.avoid_exercises else 'None'}.
+        - Sessions per week: {user_input.sessions_per_week}.
+        - Session duration: {user_input.constraints or '75-90 minutes'}.
+
+    Program Continuity:
+    - Reference the following summary of previous weeks' performance and structure to ensure continuity and progression:
+      {previous_weeks_summary or "No data from previous weeks provided. Start with baseline workouts for week 1."}
+    - Apply progressive overload principles:
+      - Increase load, volume, or intensity for strength training sessions week-to-week.
+      - Introduce progressively harder WODs or higher-skill movements as the athlete progresses.
 
     Output Requirements:
-    - Strictly adhere to the following JSON schema.
-    - Do not wrap the response in Markdown or as a string.
-    - Return a valid JSON object.
+    - Return **only** a valid JSON object. Do not include any markdown formatting, such as ```json.
+    - The response must strictly adhere to the following JSON schema:
 
     Schema:
     {{
@@ -165,17 +197,17 @@ def build_prompt(user_input: WorkoutRequest, week: int) -> str:
                             {{
                                 "type": "WOD",
                                 "details": {{
-                                    "description": "Fran: 21-15-9 reps of thrusters(95#/65#) and pull-ups",
-                                    "intended_stimulus": "Quick and intense",
-                                    "scaling_options": "Reduce weight if needed, aim for unbroken sets",
+                                    "description": "Custom WOD description (e.g., Fran: 21-15-9 reps of thrusters and pull-ups)",
+                                    "intended_stimulus": "Stimulus goal (e.g., Quick and intense, focus on unbroken sets)",
+                                    "scaling_options": "Scaling guidance (e.g., Reduce weight to maintain intensity)",
                                     "movements": [
                                         {{
                                             "description": "Thrusters (95/65 lbs)",
-                                            "resources": "https://link.to/movement"
+                                            "resources": "https://link.to/thrusters"
                                         }},
                                         {{
                                             "description": "Pull-ups",
-                                            "resources": "https://link.to/movement"
+                                            "resources": "https://link.to/pullups"
                                         }}
                                     ]
                                 }}
@@ -183,28 +215,28 @@ def build_prompt(user_input: WorkoutRequest, week: int) -> str:
                             {{
                                 "type": "Strength",
                                 "details": {{
-                                    "description": "Push Press escalating load from 70% to 85% of 1RM",
+                                    "description": "Strength session description (e.g., Back Squat 5x5 at 80% of 1RM)",
                                     "sets": 5,
                                     "reps": 3,
-                                    "intensity": "85% of 1RM",
-                                    "rest": "2 minutes between sets",
-                                    "notes": "Focus on technique and speed"
+                                    "intensity": "Intensity details (e.g., 80% of 1RM)",
+                                    "rest": "Rest period between sets (e.g., 2-3 minutes)",
+                                    "notes": "Execution notes (e.g., Focus on depth and explosive drive)"
                                 }}
                             }},
                             {{
                                 "type": "Rest Day",
                                 "details": {{
-                                    "notes": "Take the day off to recover.",
-                                    "description": "An apple a day keeps the doctor away! Eat well"
+                                    "notes": "Rest guidance (e.g., Take the day off to recover.)",
+                                    "description": "Rest day notes (e.g., An apple a day keeps the doctor away! Eat well)"
                                 }}
                             }},
                             {{
                                 "type": "Active Recovery",
                                 "details": {{
                                     "activities": ["Mobility work", "Foam rolling"],
-                                    "duration": "30-60 minutes",
-                                    "intensity": "Low",
-                                    "description": "Take a stroll in the park"
+                                    "duration": "Duration of recovery session (e.g., 30-60 minutes)",
+                                    "intensity": "Recovery intensity (e.g., Low)",
+                                    "description": "Description of recovery focus (e.g., Take a stroll in the park)"
                                 }}
                             }}
                         ]
@@ -214,11 +246,43 @@ def build_prompt(user_input: WorkoutRequest, week: int) -> str:
         ]
     }}
 
-    Generate a workout plan for week {week}. Ensure the output is valid JSON, adheres to the schema, and is not wrapped in Markdown or as a string.
+    Generate a workout plan for week {week}. Ensure the output is valid JSON, adheres to the schema, and reflects the athlete's goals and training guidelines. Do not include any extraneous text or formatting outside of the JSON object.
     """
 
 
-def generate_weekly_workout(user_input: WorkoutRequest, week: int) -> Week:
+def summarize_week_for_next_prompt(week: Week) -> str:
+    """
+    Summarize the week's workouts for continuity in the next prompt.
+    """
+    summary = []
+    for day_idx, day in enumerate(week.days, start=1):
+        day_summary = f"Day {day_idx}:"
+        for session in day.sessions:
+            if session.type == "WOD":
+                wod_details = session.details
+                day_summary += (
+                    f" WOD - {wod_details.description} | Stimulus: {wod_details.intended_stimulus};"
+                )
+            elif session.type == "Strength":
+                strength_details = session.details
+                day_summary += (
+                    f" Strength - {strength_details.description}, {strength_details.sets}x{strength_details.reps} "
+                    f"at {strength_details.intensity} | Notes: {strength_details.notes};"
+                )
+            elif session.type == "Rest Day":
+                rest_details = session.details
+                day_summary += f" Rest Day - {getattr(rest_details, 'description', 'Rest and recover.')};"
+            elif session.type == "Active Recovery":
+                recovery_details = session.details
+                day_summary += (
+                    f" Active Recovery - {getattr(recovery_details, 'description', 'Recovery session')}, "
+                    f"Duration: {getattr(recovery_details, 'duration', '30-60 minutes')};"
+                )
+        summary.append(day_summary)
+    return " ".join(summary)
+
+
+def generate_weekly_workout(user_input: WorkoutRequest, week: int, previous_weeks_summary: str = "") -> Week:
     """
     Generate workout sessions for a specific week.
     """
@@ -246,7 +310,7 @@ def generate_weekly_workout(user_input: WorkoutRequest, week: int) -> Week:
         time.sleep(MIN_TIME_BETWEEN_REQUESTS - time_since_last_request)
 
     # Prompt to guide OpenAI API
-    prompt = build_prompt(user_input, week)
+    prompt = build_prompt(user_input, week, previous_weeks_summary)
     print(f"prompt: {prompt}")
     try:
         response = client.chat.completions.create(
@@ -277,7 +341,16 @@ def generate_workout_with_ai(user_input: WorkoutRequest) -> WorkoutPlan:
     """
     Generate a full workout plan for the requested duration.
     """
-    weeks = [generate_weekly_workout(user_input, week) for week in range(1, user_input.duration + 1)]
+    weeks = []
+    previous_weeks_summary = ""
+    for week in range(1, user_input.duration + 1):
+        # Generate the week's workout plan
+        week_plan = generate_weekly_workout(user_input, week, previous_weeks_summary)
+        # Add the week to the plan
+        weeks.append(week_plan)
+        # Update the summary for the next week's prompt
+        previous_weeks_summary = summarize_week_for_next_prompt(week_plan)
+
     return WorkoutPlan(name=f"{user_input.name}'s Plan", weeks=weeks)
 
 
@@ -291,3 +364,74 @@ def generate_workout(request: WorkoutRequest):
     API endpoint to generate a workout plan.
     """
     return generate_workout_with_ai(request)
+
+
+def get_workout_category(workout):
+    """
+    Classify workout category based on title and score type.
+    """
+    title = workout["title"].lower().strip()
+    score_type = workout["score_type"].strip().lower()
+
+    # Warmups typically have common identifiers
+    if any(kw in title for kw in ["pre-wod", "warmup", "mobility"]):
+        return "warmup"
+    elif any(kw in title for kw in ["cooldown", "recovery", "stretch"]):
+        return "cooldown"
+    elif score_type:  # If there's a score, it's likely a main workout
+        return "workout"
+    return "other"
+
+
+@router.get("/search_similar_workouts")
+def search_similar_workouts(
+        query: str = Query(..., description="Search query for workouts"),
+        top_k: int = 10,
+        include_warmups: bool = Query(True, description="Include warmups"),
+        include_cooldowns: bool = Query(True, description="Include cooldowns"),
+):
+    """
+    Search for similar workouts using FAISS text embeddings.
+    Filters results by warmups, cooldowns, or main workouts.
+    """
+    query_embedding = model.encode([query], convert_to_numpy=True)
+
+    # Ensure correct dimensions
+    if query_embedding.shape[1] != index.d:
+        raise HTTPException(status_code=400,
+                            detail=f"Query embedding size mismatch: {query_embedding.shape[1]} != {index.d}")
+
+    distances, indices = index.search(query_embedding, top_k)
+
+    results, warmups, cooldowns = [], [], []
+
+    for i, idx in enumerate(indices[0]):
+        if idx < len(workout_metadata):
+            workout = workout_metadata[idx]
+            workout_category = get_workout_category(workout)
+
+            result = {
+                "rank": i + 1,
+                "title": workout["title"],
+                "description": workout["description"],
+                "score_type": workout["score_type"],
+                "workout_type": workout["workout_type"],
+                "track": workout["track"],
+                "created_at": workout["created_at"],
+                "distance": float(distances[0][i]),  # Lower is better
+            }
+
+            # Categorize
+            if workout_category == "warmup" and include_warmups:
+                warmups.append(result)
+            elif workout_category == "cooldown" and include_cooldowns:
+                cooldowns.append(result)
+            else:
+                results.append(result)
+
+    return {
+        "query": query,
+        "results": results,
+        "warmups": warmups,
+        "cooldowns": cooldowns
+    }

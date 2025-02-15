@@ -1,6 +1,6 @@
 from fastapi import FastAPI
-from backend.api.workouts import router as workout_router
-
+from fastapi import FastAPI
+from backend.api.router import router
 app = FastAPI(
     title="WorkoutAI API",
     description="AI-Powered Adaptive Strength & HIIT Training API",
@@ -13,7 +13,7 @@ def read_root():
     return {"message": "WorkoutAI API is running!"}
 
 # Include Workout Endpoints
-app.include_router(workout_router, prefix="/workouts", tags=["Workouts"])
+app.include_router(router)
 
 if __name__ == "__main__":
     import uvicorn

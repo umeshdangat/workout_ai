@@ -172,3 +172,5 @@ cython_debug/
 
 .idea
 workout_cache/
+temp_data/
+faiss_index/

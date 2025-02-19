@@ -1,4 +1,5 @@
-from typing import List, Optional, Union
+from typing import List, Optional, Dict, Type
+from typing import Union
 
 from pydantic import BaseModel
 
@@ -24,67 +25,94 @@ class WorkoutRequest(BaseModel):
     duration: Optional[int] = 8  # Total program duration in weeks
     recovery_days: Optional[int] = None  # Number of active recovery days per week
 
+# ------------------------
+# Base Class for Sessions
+# ------------------------
+class SessionDetails(BaseModel):
+    """Base class for all session types."""
+    @classmethod
+    def from_dict(cls, type: str, details: Dict) -> "SessionDetails":
+        """Factory method to create the correct session type."""
+        session_classes: Dict[str, Type["SessionDetails"]] = {
+            "WOD": WOD,
+            "Strength": Strength,
+            "Rest Day": RestDay,
+            "Active Recovery": ActiveRecoveryDay
+        }
+        session_cls = session_classes.get(type)
+        if session_cls:
+            return session_cls(**details)
+        raise ValueError(f"Unknown session type: {type}")
+
+
 
 # ------------------------
-# Core Models
+# Core Models (Inherit from SessionDetails)
 # ------------------------
+
 class Movement(BaseModel):
-    description: str  # Description of the movement
-    resources: Optional[str] = None  # Link to tutorial or demo (e.g., "https://www.crossfit.com/movement")
-
-
-class WOD(BaseModel):
-    description: str  # Details of the WOD (e.g., workout structure)
-    intended_stimulus: str  # Goals of the workout (e.g., "fast-paced, unbroken")
-    scaling_options: str  # How athletes can scale the workout
-    movements: List[Movement]  # List of movements with descriptions and resources
-
-
-class Strength(BaseModel):
     description: str
-    sets: Optional[str] = None  # Number of sets
-    reps: Optional[str] = None # Number of reps
-    intensity: Optional[str] = None  # Intensity level (e.g., "70% of 1RM")
-    rest: Optional[str] = None  # Rest time between sets (e.g., "2 minutes")
-    notes: Optional[str] = None  # Additional notes for guidance
+    resources: Optional[str] = None
 
-class RestDay(BaseModel):
+
+class WOD(SessionDetails):
+    description: str
+    intended_stimulus: str
+    scaling_options: str
+    movements: List[Movement]
+
+
+class Strength(SessionDetails):
+    description: str
+    sets: Optional[int] = None
+    reps: Optional[int] = None
+    intensity: Optional[str] = None
+    rest: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class RestDay(SessionDetails):
     type: str = "Rest Day"
     description: Optional[str] = "Take the day off to recover."
     notes: Optional[str] = "Take the day off to recover."
 
-class ActiveRecoveryDay(BaseModel):
+
+class ActiveRecoveryDay(SessionDetails):
     type: str = "Active Recovery"
     description: Optional[str] = None
     activities: Optional[List[str]] = ["Mobility work", "Light cardio", "Foam rolling"]
     duration: Optional[str] = "30-60 minutes"
     intensity: Optional[str] = "Low"
 
+
 # ------------------------
 # Session Model
 # ------------------------
+
 class Session(BaseModel):
-    type: str  # "WOD", "Strength", "Rest Day", "Active Recovery"
-    details: Optional[Union[WOD, Strength, RestDay, ActiveRecoveryDay]]
+    type: str
+    details: SessionDetails
+
+    @classmethod
+    def from_dict(cls, session_data: Dict) -> "Session":
+        """Factory method to create a session with the correct `details` type."""
+        session_type = session_data["type"]
+        details = SessionDetails.from_dict(session_type, session_data["details"])
+        return cls(type=session_type, details=details)
 
 
 # ------------------------
-# Daily Structure
+# Daily, Weekly, and Plan Models
 # ------------------------
+
 class Day(BaseModel):
-    sessions: List[Session] # A list of sessions for this day (can include WOD, Strength, or Recovery)
+    sessions: List[Session]
 
 
-# ------------------------
-# Weekly Structure
-# ------------------------
 class Week(BaseModel):
-    days: List[Day]  # List of days in the week
+    days: List[Day]
 
 
-# ------------------------
-# Plan Model
-# ------------------------
 class WorkoutPlan(BaseModel):
-    name: str  # Name of the workout plan
-    weeks: List[Week]  # List of weeks in the plan
+    name: str
+    weeks: List[Week]

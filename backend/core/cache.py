@@ -1,5 +1,6 @@
 import json
 import os
+from typing import Optional
 
 CACHE_DIR = "workout_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -11,7 +12,7 @@ def save_to_cache(data: str, filename: str) -> None:
         json.dump({"openai_response": data}, file, indent=4)
 
 
-def load_from_cache(filename: str) -> str:
+def load_from_cache(filename: str) -> Optional[str]:
     """Load cached OpenAI response if available."""
     if os.path.exists(filename):
         with open(filename, "r") as file:

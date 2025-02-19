@@ -4,7 +4,6 @@ from backend.services.search import search_similar_workouts
 
 router = APIRouter()
 
-
 @router.get("/search_similar_workouts")
 def search(
         query: str = Query(..., description="Search query for workouts"),

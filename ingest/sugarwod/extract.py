@@ -15,8 +15,8 @@ BASE_URL = "https://api.sugarwod.com/v2"
 HEADERS = {"Authorization": API_KEY}
 
 # Define Default Date Range
-DEFAULT_START_DATE = "20220911"
-DEFAULT_END_DATE = "20221113"
+DEFAULT_START_DATE = "20170101"
+DEFAULT_END_DATE = "20171231"
 
 
 def fetch_workouts(start_date, end_date):

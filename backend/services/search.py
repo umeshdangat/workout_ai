@@ -1,4 +1,4 @@
-from backend.core.embeddings import model, index, workout_metadata
+from backend.core.load_embeddings import model, index, workout_metadata
 
 
 def get_workout_category(workout):

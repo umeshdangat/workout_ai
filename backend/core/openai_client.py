@@ -29,7 +29,9 @@ def call_openai_api(prompt: str) -> str:
         time.sleep(MIN_TIME_BETWEEN_REQUESTS - time_since_last_request)
 
     response = client.chat.completions.create(
-        model="gpt-3.5-turbo",
+        #gpt-4o-mini
+        #gpt-3.5-turbo
+        model="gpt-4o-mini",
         messages=[{"role": "system", "content": "You are a fitness coach generating structured training programs."},
                   {"role": "user", "content": prompt}],
         temperature=0.7,

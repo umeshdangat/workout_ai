@@ -1,16 +1,23 @@
 from backend.models.workouts import WorkoutRequest
+from backend.services.search import search_similar_workouts
 
 
 def build_prompt(user_input: WorkoutRequest, week: int, previous_weeks_summary: str = "") -> str:
     """
-    Builds a structured prompt for generating AI-driven workout programs.
+    Builds a structured prompt for generating AI-driven workout programs with RAG.
     """
+
+    # Retrieve similar workouts
+    similar_workouts = search_similar_workouts(query=", ".join(user_input.goals), top_k=5)
 
     return f"""
     You are a highly experienced coach generating structured workout programs. Your task is to create a detailed workout plan in valid JSON format for {user_input.name}, a {user_input.age}-year-old {user_input.experience} athlete.
 
     Athlete Goals:
     - {', '.join(user_input.goals)}.
+
+    Reference Workouts (Retrieved from Similar Programs):
+    {similar_workouts}
 
     Training Guidelines:
     - Avoid repeating benchmark CrossFit WODs like "Grace" or "Fran" multiple times in the program. Create new, custom workouts with unique names.
@@ -97,3 +104,4 @@ def build_prompt(user_input: WorkoutRequest, week: int, previous_weeks_summary: 
 
     Generate a workout plan for week {week}. Ensure the output is valid JSON, adheres to the schema, and reflects the athlete's goals and training guidelines. Do not include any extraneous text or formatting outside of the JSON object.
     """
+

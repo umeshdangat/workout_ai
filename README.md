@@ -9,9 +9,13 @@ WorkoutAI is an **open-source adaptive strength and conditioning platform** that
 
 ## **🔹 Features**
 ✅ **Custom 6-10 Week Periodized Workout Plans** – Strength & HIIT routines optimized for performance  
+
 ✅ **AI-Powered Adaptation** – Uses GPT-4 with FAISS-enhanced similarity retrieval
+
 ✅ **FAISS Vector Search** – Finds similar workouts from a **pre-indexed dataset**  
+
 ✅ **REST API-First Design** – Easily integrates with chatbots, mobile apps, or wearables  
+
 ✅ **Structured, Type-Safe Python Code** – Built following **Fluent Python** best practices
 ---
 
